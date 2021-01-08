@@ -1,0 +1,10 @@
+{
+  "name": "common",
+  "version": "1.0.0",
+  "main": "eslint.cjs",
+  "license": "MIT",
+  "private": "true",
+  "engines": {
+    "node": "14.x"
+  }
+}
