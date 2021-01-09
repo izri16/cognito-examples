@@ -91,12 +91,12 @@ export const ForgotPassword = () => {
   const onSubmit = async (e) => {
     e.preventDefault()
     if (recoveryState === 'confirm') {
-      const res = await forgotPasswordConfirm(
+      const {status} = await forgotPasswordConfirm(
         formData.username,
         formData.password,
         formData.code
       )
-      if (res.status === 200) {
+      if (status === 200) {
         setRecoveryState('success')
       }
     } else if (recoveryState === 'init') {

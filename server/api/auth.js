@@ -1,7 +1,21 @@
 import express from 'express'
 import axios from 'axios'
+import qs from 'query-string'
+import crypto from 'crypto'
+import util from 'util'
 import {config} from '../config.js'
 import {decodeAndVerifyToken, getSecretToken} from '../authUtils.js'
+
+// Notes: (this is just a proof-of-content) of how to use cognito API + custom server
+// and store refreshToken safely in httpOnly cookie
+// 1. Logging & error handling would need to be revisited
+// 2. Failled social callback handling
+// 3. Other endpoints & scenarious
+
+// only used for http only cookies
+const TEN_YEARS = 10 * 365 * 24 * 60 * 60
+
+const randomBytes = util.promisify(crypto.randomBytes)
 
 // API reference
 // https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/Welcome.html
@@ -19,7 +33,68 @@ const cognitoRequest = async (action, data) => {
   return await axios(axiosConf)
 }
 
+const setLoginCookies = (res, refreshToken, username) => {
+  res.cookie('refreshToken', refreshToken, {
+    maxAge: TEN_YEARS,
+    httpOnly: true,
+    secure: config.https,
+  })
+  // Note: we need to store "uuid username" as some AWS endpoints require it
+  res.cookie('username', username, {
+    maxAge: TEN_YEARS,
+    httpOnly: true,
+    secure: config.https,
+  })
+}
+
 const router = express.Router()
+
+// Called after social login
+router.get('/callback', async (req, res) => {
+  const {code, state} = req.query
+  const authStr = `${config.cognito.clientId}:${config.cognito.secret}`
+  const authStrBuffer = new Buffer(authStr)
+  const authStr64data = authStrBuffer.toString('base64')
+
+  const serverUrl = `${config.https ? 'https://' : 'http://'}${
+    req.headers.host
+  }`
+
+  const redirectUrl = config.dev ? config.clientDevHost : serverUrl
+
+  if (req.cookies.csrfLoginToken !== state) {
+    return res.redirect(redirectUrl)
+  }
+
+  const axiosConf = {
+    method: 'post',
+    url: `${config.cognito.poolUrl}/oauth2/token`,
+    data: qs.stringify({
+      grant_type: 'authorization_code',
+      client_id: config.cognito.clientId,
+      code,
+      redirect_uri: `${serverUrl}/auth/callback`,
+    }),
+    headers: {
+      Authorization: `Basic ${authStr64data}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+  }
+
+  try {
+    const {id_token, refresh_token, access_token} = (
+      await axios(axiosConf)
+    ).data
+    const decodedAccessToken = await decodeAndVerifyToken(access_token)
+    const decodedIdToken = await decodeAndVerifyToken(id_token)
+    console.log('OIDC data', decodedIdToken.identities)
+    setLoginCookies(res, refresh_token, decodedAccessToken.username)
+    return res.redirect(redirectUrl)
+  } catch (err) {
+    console.error('OAuth2.0 error', err.response.data)
+    return res.sendStatus(400)
+  }
+})
 
 router.post('/register', async (req, res) => {
   try {
@@ -52,21 +127,9 @@ router.post('/login', async (req, res) => {
         ClientId: config.cognito.clientId,
       })
     ).data.AuthenticationResult
-
     const decodedAccessToken = await decodeAndVerifyToken(AccessToken)
     await decodeAndVerifyToken(IdToken)
-
-    res.cookie('refreshToken', RefreshToken, {
-      maxAge: 60 * 60 * 24 * 7, // TODO: get this value from refresh token
-      httpOnly: true,
-      secure: false,
-    })
-    // Note: we need to store "uuid username" as some AWS endpoints require it
-    res.cookie('username', decodedAccessToken.username, {
-      maxAge: 60 * 60 * 24 * 7, // TODO: get this value from refresh token
-      httpOnly: true,
-      secure: false,
-    })
+    setLoginCookies(res, RefreshToken, decodedAccessToken.username)
     return res.json({accessToken: AccessToken})
   } catch (err) {
     console.error('Login error', err.response.data)
@@ -114,6 +177,7 @@ router.post('/forgot-password-confirm', async (req, res) => {
 router.post('/logout', async (req, res) => {
   res.clearCookie('refreshToken')
   res.clearCookie('username')
+  res.clearCookie('csrfLoginToken')
   res.sendStatus(200)
 })
 
@@ -127,6 +191,13 @@ router.post('/renew', async (req, res) => {
 
   // Note: that this always return new access token
 
+  const csrfLoginToken = (await randomBytes(48)).toString('hex')
+  res.cookie('csrfLoginToken', csrfLoginToken, {
+    maxAge: TEN_YEARS,
+    httpOnly: false,
+    secure: config.https,
+  })
+
   try {
     const {AccessToken} = (
       await cognitoRequest('InitiateAuth', {
@@ -138,9 +209,18 @@ router.post('/renew', async (req, res) => {
         ClientId: config.cognito.clientId,
       })
     ).data.AuthenticationResult
-    await decodeAndVerifyToken(AccessToken)
+    const decodedAccessToken = await decodeAndVerifyToken(AccessToken)
+
+    const csrfLoginToken = (await randomBytes(48)).toString('hex')
+    res.cookie('csrfLoginToken', csrfLoginToken, {
+      maxAge: TEN_YEARS,
+      httpOnly: false,
+      secure: config.https,
+    })
+
     return res.json({
       accessToken: AccessToken,
+      accessTokenExpiration: decodedAccessToken.exp * 1000,
     })
   } catch (err) {
     console.error('Renew error', err.response.data)

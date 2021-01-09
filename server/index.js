@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser'
 import {config} from './config.js'
 import authRouter from './api/auth.js'
 import dataRouter from './api/data.js'
+import {__dirname} from './nodeUtils.js'
 
 const app = express()
 

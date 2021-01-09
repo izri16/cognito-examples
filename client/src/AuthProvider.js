@@ -1,8 +1,8 @@
 import React from 'react'
-import {Route, Redirect, useHistory} from 'react-router-dom'
-import {apiRequest, setApiRequest} from './api'
+import {Route, Redirect} from 'react-router-dom'
+import {apiRequest, setApiRequest, renewTokens} from './api'
 
-const LOGIN_STATUS = {
+export const LOGIN_STATUS = {
   unknown: 'unknown',
   loggedIn: 'loggedIn',
   loggedOut: 'loggedOut',
@@ -18,35 +18,31 @@ const AuthContext = React.createContext({
 })
 
 export const AuthProvider = ({children}) => {
-  const history = useHistory()
   const [authState, setAuthState] = React.useState(LOGIN_STATUS.unknown)
 
-  const logout = async () => {
-    await apiRequest('auth/logout', 'POST')
-    setApiRequest(null)
-    setAuthState(LOGIN_STATUS.loggedOut)
-    history.push('/')
-  }
-
   const renew = async () => {
-    const res = await apiRequest('auth/renew', 'POST')
-    if (res.status === 200) {
-      const data = await res.json()
-      setApiRequest(data.accessToken)
+    const renewData = await renewTokens()
+    if (renewData) {
+      setApiRequest(renewData)
       setAuthState(LOGIN_STATUS.loggedIn)
     } else {
+      setApiRequest({})
       setAuthState(LOGIN_STATUS.loggedOut)
     }
   }
 
+  const logout = async () => {
+    await apiRequest('auth/logout', 'POST')
+    await renew()
+  }
+
   const login = async (username, password) => {
-    const res = await apiRequest('auth/login', 'POST', {
+    const {data} = await apiRequest('auth/login', 'POST', {
       username,
       password,
     })
-    if (res.status === 200) {
-      const data = await res.json()
-      setApiRequest(data.accessToken)
+    if (data) {
+      setApiRequest(data)
       setAuthState(LOGIN_STATUS.loggedIn)
     }
   }
@@ -101,7 +97,7 @@ export const AuthRoute = ({children, ...rest}) => {
   return (
     <Route
       {...rest}
-      render={({location}) => {
+      render={() => {
         if (authState === LOGIN_STATUS.unknown) {
           return <Loading />
         }
@@ -119,7 +115,7 @@ export const NoAuthRoute = ({children, ...rest}) => {
   return (
     <Route
       {...rest}
-      render={({location}) => {
+      render={() => {
         if (authState === LOGIN_STATUS.unknown) {
           return <Loading />
         }

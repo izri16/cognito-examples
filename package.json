@@ -7,6 +7,8 @@
   "private": true,
   "scripts": {
     "dev": "concurrently 'yarn --cwd server dev' 'yarn --cwd client dev'",
+    "build": "yarn --cwd client build",
+    "start": "yarn --cwd server start",
     "lint": "yarn --cwd server lint && yarn --cwd client lint",
     "lint-fix": "yarn --cwd server lint --fix && yarn --cwd client lint --fix"
   },

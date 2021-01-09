@@ -1,61 +1,81 @@
 import {config} from './config'
 
-export const loadAccessToken = async () => {
-  const res = await apiRequest('auth/renew', 'POST')
-  if (res.status !== 200) {
-    return null
-  }
-  const data = await res.json()
-  return data.accessToken
-}
+const customFetch = async (...args) => {
+  let data = null
+  let error = null
+  try {
+    const res = await fetch(...args)
+    const status = res.status
+    let data = null
 
-const withAccessTokenRetry = async (fn, logout) => {
-  let res = await fn()
-
-  if (res.status === 401) {
-    // AccessToken might be expired, try to grab new one
-    // TODO: we should be able to check token expiration directly
-    const accessToken = await loadAccessToken()
-
-    if (!accessToken) {
-      // TODO: rething
-      logout && (await logout())
+    if (res.ok) {
+      try {
+        data = await res.json()
+        return {status, data, error}
+      } catch (error) {
+        return {status, data, error}
+      }
     }
-
-    setApiRequest(accessToken)
-    res = await fn()
+    // 400+ errors (consider getting error description/message)
+    return {status, data, error}
+  } catch (error) {
+    // 500 errors
+    return {status: 500, data, error}
   }
-  return res
 }
 
-const getApiRequest = (accessToken, logout) => async (path, method, data) => {
-  const url = `${config.serverUrl}/${path}`
-
-  const isCookiePath = path.startsWith('auth')
-
+const getFetchHeaders = ({method, path, accessToken, data}) => {
+  const sendCookies = path.startsWith('auth')
   const options = {
     method,
     cache: 'no-cache',
-    credentials: isCookiePath
+    credentials: sendCookies
       ? config.dev
         ? 'include'
         : 'same-origin'
       : 'omit',
     headers: {
       'Content-Type': 'application/json',
-      'Access-Token': accessToken,
     },
   }
-
+  if (accessToken) {
+    options.headers['Access-Token'] = accessToken
+  }
   if (data) {
     options.body = JSON.stringify(data)
   }
-
-  return await withAccessTokenRetry(() => fetch(url, options))
+  return options
 }
 
-export let apiRequest = getApiRequest()
+export const renewTokens = async () => {
+  const path = 'auth/renew'
+  const url = `${config.serverUrl}/${path}`
+  const options = getFetchHeaders({method: 'POST', path})
+  const {data} = await customFetch(url, options)
+  return data
+}
 
-export const setApiRequest = (accessToken, logout) => {
-  apiRequest = getApiRequest(accessToken, logout)
+const getApiRequest = ({accessToken, accessTokenExpiration}) => async (
+  path,
+  method,
+  data
+) => {
+  const url = `${config.serverUrl}/${path}`
+  const options = getFetchHeaders({method, path, accessToken, data})
+
+  // Get new access_token if the current will soon expire (30s)
+  if (accessToken && Date.now() - accessTokenExpiration < 1000 * 30) {
+    const renewData = await renewTokens()
+    if (renewData) {
+      accessToken = renewData.accessToken
+      accessTokenExpiration = renewData.accessTokenExpiration
+    }
+  }
+  return await customFetch(url, options)
+}
+
+export let apiRequest = getApiRequest({})
+
+export const setApiRequest = (renewData) => {
+  apiRequest = getApiRequest(renewData)
 }
